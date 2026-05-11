@@ -1,128 +1,161 @@
 #!/bin/bash
-# Установка ELK Stack на сервер log1 (192.168.50.48)
-# ----------------------------------------------------
-# Скрипт должен выполняться от root или через sudo.
+# =============================================================================
+# Установка ELK Stack (Elasticsearch, Logstash, Kibana) на сервер log1
+# IP сервера: 192.168.50.48
+# Версия: 8.17.1
+# Используется Яндекс зеркало (доступно из РФ)
+# =============================================================================
 
-set -e  # Остановка при любой ошибке — если что-то пойдет не так, скрипт прервется.
+set -e  # Остановить скрипт при любой ошибке
 
-export DEBIAN_FRONTEND=noninteractive  # Отключаем интерактивные запросы (например, при установке пакетов)
+# Отключаем интерактивные запросы apt
+export DEBIAN_FRONTEND=noninteractive
 
-# ------- 1. Обновление системы и установка JDK -------
-apt update
-apt install -y default-jdk wget curl
-# Java (JDK) требуется для работы Elasticsearch и Logstash.
-# wget и curl нужны для скачивания пакетов и проверки соединений.
+# Цвета для вывода (опционально, для красоты)
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-# ------- 2. Скачивание пакетов с Яндекс зеркала -------
+echo -e "${GREEN}============================================${NC}"
+echo -e "${GREEN}=== Установка ELK Stack (8.17.1) на log1 ===${NC}"
+echo -e "${GREEN}============================================${NC}"
+
+# =============================================================================
+# 1. Обновление системы и установка JDK (Java Development Kit)
+# =============================================================================
+echo -e "${YELLOW}==> 1. Установка JDK, wget, curl...${NC}"
+apt update -qq
+apt install -y -qq default-jdk wget curl
+
+# =============================================================================
+# 2. Скачивание пакетов Elasticsearch, Logstash, Kibana с Яндекс зеркала
+# =============================================================================
+echo -e "${YELLOW}==> 2. Скачивание пакетов ELK...${NC}"
 cd /tmp
-# Используем зеркало Яндекса, потому что официальный репозиторий Elastic часто блокируется из РФ (403 Forbidden).
-wget https://mirror.yandex.ru/mirrors/elastic/8.17.1/elasticsearch-8.17.1-amd64.deb
-wget https://mirror.yandex.ru/mirrors/elastic/8.17.1/logstash-8.17.1-amd64.deb
-wget https://mirror.yandex.ru/mirrors/elastic/8.17.1/kibana-8.17.1-amd64.deb
+wget -q --show-progress https://mirror.yandex.ru/mirrors/elastic/8.17.1/elasticsearch-8.17.1-amd64.deb
+wget -q --show-progress https://mirror.yandex.ru/mirrors/elastic/8.17.1/logstash-8.17.1-amd64.deb
+wget -q --show-progress https://mirror.yandex.ru/mirrors/elastic/8.17.1/kibana-8.17.1-amd64.deb
 
-# ------- 3. Установка пакетов -------
+# =============================================================================
+# 3. Установка пакетов
+# =============================================================================
+echo -e "${YELLOW}==> 3. Установка пакетов...${NC}"
 dpkg -i elasticsearch-8.17.1-amd64.deb
 dpkg -i logstash-8.17.1-amd64.deb
 dpkg -i kibana-8.17.1-amd64.deb
-# dpkg -i устанавливает .deb пакеты. При необходимости могут быть предупреждения о зависимостях,
-# но все основные зависимости уже удовлетворены установкой JDK.
 
-# ------- 4. Настройка Elasticsearch -------
-cat > /etc/elasticsearch/elasticsearch.yml <<EOF
-cluster.name: elk-cluster          # Имя кластера (может быть любым)
-node.name: elk-node                # Имя этого узла
-network.host: 0.0.0.0              # Слушаем все сетевые интерфейсы (чтобы был доступ извне)
-http.port: 9200                    # Стандартный порт Elasticsearch REST API
+# =============================================================================
+# 4. Настройка Elasticsearch
+# =============================================================================
+echo -e "${YELLOW}==> 4. Настройка Elasticsearch...${NC}"
+cat > /etc/elasticsearch/elasticsearch.yml <<'EOF'
+# --------------------------- Elasticsearch Configuration ---------------------------
+cluster.name: elk-cluster
+node.name: elk-node
+network.host: 0.0.0.0
+http.port: 9200
 
-# Отключаем безопасность (согласно заданию – HTTP, без TLS, без авторизации)
+# Отключаем безопасность (HTTP, без TLS, без авторизации) – согласно заданию
 xpack.security.enabled: false
 xpack.security.enrollment.enabled: false
 xpack.security.http.ssl.enabled: false
 xpack.security.transport.ssl.enabled: false
 
-# Настройки для одноузлового кластера (без discovery)
+# Для одноузлового кластера
 cluster.initial_master_nodes: ["elk-node"]
 discovery.type: single-node
 EOF
 
-# Запускаем Elasticsearch и добавляем в автозагрузку
 systemctl start elasticsearch
 systemctl enable elasticsearch
+echo -e "${GREEN}✓ Elasticsearch запущен${NC}"
 
-# ------- 5. Настройка Kibana -------
-cat > /etc/kibana/kibana.yml <<EOF
-server.port: 5601                  # Порт веб-интерфейса
-server.host: "0.0.0.0"             # Доступно с любого IP (для подключения из браузера)
-elasticsearch.hosts: ["http://localhost:9200"]  # Адрес локального Elasticsearch (HTTP)
+# =============================================================================
+# 5. Настройка Kibana
+# =============================================================================
+echo -e "${YELLOW}==> 5. Настройка Kibana...${NC}"
+cat > /etc/kibana/kibana.yml <<'EOF'
+# --------------------------- Kibana Configuration ---------------------------
+server.port: 5601
+server.host: "0.0.0.0"
+elasticsearch.hosts: ["http://localhost:9200"]
 EOF
 
 systemctl start kibana
 systemctl enable kibana
+echo -e "${GREEN}✓ Kibana запущена${NC}"
 
-# ------- 6. Настройка Logstash -------
-# Создаём директорию для конфигураций pipelines
+# =============================================================================
+# 6. Настройка Logstash (приём логов от Filebeat на порту 5400)
+# =============================================================================
+echo -e "${YELLOW}==> 6. Настройка Logstash...${NC}"
 mkdir -p /etc/logstash/conf.d
 
-# Основной конфиг Logstash (указываем где искать pipelines)
-cat > /etc/logstash/logstash.yml <<EOF
+# Основной конфиг Logstash
+cat > /etc/logstash/logstash.yml <<'EOF'
 node.name: elk-logstash
-path.config: /etc/logstash/conf.d   # Папка, где лежат .conf файлы pipeline'ов
+path.config: /etc/logstash/conf.d
 EOF
 
-# Создаём pipeline для обработки логов nginx
-cat > /etc/logstash/conf.d/logstash-nginx-es.conf <<EOF
+# Pipeline для обработки логов nginx
+cat > /etc/logstash/conf.d/logstash-nginx-es.conf <<'EOF'
 input {
     beats {
-        port => 5400                # Порт, на котором Logstash слушает соединения от Filebeat
+        port => 5400
     }
 }
 filter {
-    # Парсим строку лога в формате Combined (стандартный формат nginx)
     grok {
         match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}" ]
         overwrite => [ "message" ]
     }
-    # Преобразуем некоторые поля в числа (для корректной визуализации в Kibana)
     mutate {
         convert => ["response", "integer"]
         convert => ["bytes", "integer"]
         convert => ["responsetime", "float"]
     }
-    # Извлекаем дату из поля timestamp (день/мес/год:час:мин:сек таймзона)
     date {
         match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
         remove_field => [ "timestamp" ]
     }
-    # Обогащаем данные информацией о браузере/ОС из User-Agent
     useragent {
         source => "agent"
     }
 }
 output {
-    # Отправляем обработанные события в Elasticsearch
     elasticsearch {
         hosts => ["http://localhost:9200"]
-        index => "weblogs-%{+YYYY.MM.dd}"   # Индекс с динамическим именем по дате
+        index => "weblogs-%{+YYYY.MM.dd}"
     }
-    # Дублируем вывод в консоль (удобно для отладки, можно удалить после проверки)
     stdout { codec => rubydebug }
 }
 EOF
 
-# Запускаем Logstash
 systemctl start logstash
 systemctl enable logstash
+echo -e "${GREEN}✓ Logstash запущен, слушает порт 5400${NC}"
 
-# ------- 7. Настройка UFW (межсетевой экран) -------
+# =============================================================================
+# 7. Настройка UFW (межсетевой экран) – открываем только необходимые порты
+# =============================================================================
+echo -e "${YELLOW}==> 7. Настройка UFW...${NC}"
 apt install -y ufw
-# Открываем порт SSH – обязательно, иначе потеряем доступ к серверу
-ufw allow 22/tcp
-# Kibana (веб-интерфейс)
-ufw allow 5601/tcp
-# Logstash (приём логов от Filebeat)
-ufw allow 5400/tcp
-# Включаем UFW (автоматически подтверждаем)
+ufw allow 22/tcp comment 'SSH'
+ufw allow 5601/tcp comment 'Kibana UI'
+ufw allow 5400/tcp comment 'Logstash beats input'
 echo "y" | ufw enable
+ufw status verbose
 
-# ------- 8. Финальное сообщение -------
-echo "ELK установлен. Kibana: http://192.168.50.48:5601"
+# =============================================================================
+# 8. Финальная проверка и информация
+# =============================================================================
+echo -e "${GREEN}============================================${NC}"
+echo -e "${GREEN}=== Установка ELK Stack завершена успешно! ===${NC}"
+echo -e "${GREEN}============================================${NC}"
+echo -e "Kibana доступна по адресу: ${YELLOW}http://192.168.50.48:5601${NC}"
+echo -e "Elasticsearch API: ${YELLOW}http://192.168.50.48:9200${NC}"
+echo -e "Logstash слушает порт: ${YELLOW}5400${NC} (для приёма логов от Filebeat)"
+echo -e "\n${YELLOW}Проверка статуса сервисов:${NC}"
+systemctl status elasticsearch --no-pager -l | head -5
+systemctl status logstash --no-pager -l | head -5
+systemctl status kibana --no-pager -l | head -5

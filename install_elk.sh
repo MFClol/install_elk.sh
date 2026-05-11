@@ -39,7 +39,7 @@ cd /tmp
 
 # Скачиваем Elasticsearch
 echo -e "${YELLOW}--- Скачивание Elasticsearch ---${NC}"
-wget -q --show-progress "https://disk.yandex.ru/d/-BkYBKY8cG2qPA" -O elasticsearch.deb
+wget -q --show-progress "https://clck.ru/3Tbvz5" -O elasticsearch.deb
 # Проверяем, что файл действительно скачался (не страница с подтверждением)
 if file elasticsearch.deb | grep -q "Debian binary package"; then
     echo -e "${GREEN}✓ Elasticsearch скачан успешно${NC}"
@@ -51,7 +51,7 @@ fi
 
 # Скачиваем Logstash
 echo -e "${YELLOW}--- Скачивание Logstash ---${NC}"
-wget -q --show-progress "https://disk.yandex.ru/d/Spe6wIE9PLTeGA" -O logstash.deb
+wget -q --show-progress "https://clck.ru/3TbviL" -O logstash.deb
 if file logstash.deb | grep -q "Debian binary package"; then
     echo -e "${GREEN}✓ Logstash скачан успешно${NC}"
 else
@@ -61,7 +61,7 @@ fi
 
 # Скачиваем Kibana
 echo -e "${YELLOW}--- Скачивание Kibana ---${NC}"
-wget -q --show-progress "https://disk.yandex.ru/d/FpR7HCLmPunDfA" -O kibana.deb
+wget -q --show-progress "https://clck.ru/3Tbvws" -O kibana.deb
 if file kibana.deb | grep -q "Debian binary package"; then
     echo -e "${GREEN}✓ Kibana скачана успешно${NC}"
 else

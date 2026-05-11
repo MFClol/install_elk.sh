@@ -44,7 +44,7 @@ done
 echo -e "${GREEN}✓ Все deb-пакеты найдены${NC}"
 
 # -----------------------------------------------------------------------------
-# 3. Полная переустановка Elasticsearch (чистая конфигурация)
+# 3. Чистая установка Elasticsearch
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}==> 2. Чистая установка Elasticsearch...${NC}"
 systemctl stop elasticsearch 2>/dev/null || true
@@ -57,7 +57,7 @@ dpkg -i "$ES_DEB"
 rm -rf /etc/elasticsearch/certs
 rm -f /etc/elasticsearch/elasticsearch.keystore
 
-# Создаём конфиг (безопасность отключена, пути для логов и данных)
+# Настройка Elasticsearch (безопасность отключена, пути логов/данных)
 cat > /etc/elasticsearch/elasticsearch.yml <<'EOF'
 cluster.name: elk-cluster
 node.name: elk-node
@@ -72,21 +72,17 @@ xpack.security.transport.ssl.enabled: false
 discovery.type: single-node
 EOF
 
-# Права на конфиг
 chown -R elasticsearch:elasticsearch /etc/elasticsearch
 chmod 750 /etc/elasticsearch
 chmod 660 /etc/elasticsearch/elasticsearch.yml
 
-# Создаём каталоги для логов и данных Elasticsearch
 mkdir -p /var/log/elasticsearch /var/lib/elasticsearch
 chown -R elasticsearch:elasticsearch /var/log/elasticsearch /var/lib/elasticsearch
 chmod 755 /var/log/elasticsearch /var/lib/elasticsearch
 
-# Запуск Elasticsearch
 systemctl start elasticsearch
 systemctl enable elasticsearch
 
-# Ожидание готовности (до 30 секунд)
 echo -e "${YELLOW}Ожидание запуска Elasticsearch (до 30 сек)...${NC}"
 for i in {1..15}; do
     if curl -s http://localhost:9200 >/dev/null 2>&1; then
@@ -119,18 +115,15 @@ systemctl start kibana
 systemctl enable kibana
 
 # -----------------------------------------------------------------------------
-# 6. Настройка Logstash (создание каталогов, прав, конфигов)
+# 6. Настройка Logstash
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}==> 5. Настройка Logstash...${NC}"
-
-# Создаём каталоги для данных и логов Logstash (исключаем ошибки прав)
 mkdir -p /usr/share/logstash/data /usr/share/logstash/logs
 chown -R logstash:logstash /usr/share/logstash/data /usr/share/logstash/logs
 chmod 755 /usr/share/logstash/data /usr/share/logstash/logs
 
 mkdir -p /etc/logstash/conf.d
 
-# Основной конфиг Logstash
 cat > /etc/logstash/logstash.yml <<'EOF'
 node.name: elk-logstash
 path.config: /etc/logstash/conf.d
@@ -138,38 +131,19 @@ path.data: /usr/share/logstash/data
 path.logs: /usr/share/logstash/logs
 EOF
 
-# Pipeline для приёма логов nginx (без useragent, чтобы избежать ошибок)
 cat > /etc/logstash/conf.d/logstash-nginx-es.conf <<'EOF'
-input {
-    beats {
-        port => 5400
-    }
-}
+input { beats { port => 5400 } }
 filter {
-    grok {
-        match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}" ]
-        overwrite => [ "message" ]
-    }
-    mutate {
-        convert => ["response", "integer"]
-        convert => ["bytes", "integer"]
-        convert => ["responsetime", "float"]
-    }
-    date {
-        match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
-        remove_field => [ "timestamp" ]
-    }
+    grok { match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}" ] overwrite => [ "message" ] }
+    mutate { convert => ["response", "integer"] convert => ["bytes", "integer"] convert => ["responsetime", "float"] }
+    date { match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ] remove_field => [ "timestamp" ] }
 }
 output {
-    elasticsearch {
-        hosts => ["http://localhost:9200"]
-        index => "weblogs-%{+YYYY.MM.dd}"
-    }
+    elasticsearch { hosts => ["http://localhost:9200"] index => "weblogs-%{+YYYY.MM.dd}" }
     stdout { codec => rubydebug }
 }
 EOF
 
-# Запуск Logstash
 systemctl start logstash
 systemctl enable logstash
 
@@ -185,14 +159,11 @@ echo "y" | ufw enable
 ufw status verbose
 
 # -----------------------------------------------------------------------------
-# 8. Создание дашборда в Kibana
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# 7. Создание дашборда в Kibana через API
+# 8. Создание дашборда в Kibana через API
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}==> 7. Создание дашборда в Kibana...${NC}"
 
-# Ждём готовности Kibana
+skip_dashboard=0
 for i in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost:5601/api/status | grep -q "200"; then
         echo -e "${GREEN}✓ Kibana готова${NC}"
@@ -205,8 +176,7 @@ for i in {1..30}; do
     fi
 done
 
-if [ -z "$skip_dashboard" ]; then
-    # 1. Создаём index pattern weblogs*
+if [ "$skip_dashboard" -eq 0 ]; then
     echo -e "${YELLOW}   Создание index pattern weblogs*...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/weblogs*" \
          -H "kbn-xsrf: true" \
@@ -214,7 +184,6 @@ if [ -z "$skip_dashboard" ]; then
          -d '{"attributes":{"title":"weblogs*","timeFieldName":"@timestamp"}}' \
          --silent --show-error || echo -e "${RED}   Не удалось создать index pattern${NC}"
 
-    # 2. Создаём визуализацию Bar (Top URLs)
     echo -e "${YELLOW}   Создание визуализации Top URLs...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-top-urls" \
          -H "kbn-xsrf: true" \
@@ -229,16 +198,11 @@ if [ -z "$skip_dashboard" ]; then
                  "kibanaVersion": "8.17.1"
                },
                "references": [
-                 {
-                   "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName",
-                   "id": "weblogs*",
-                   "type": "index-pattern"
-                 }
+                 { "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName", "id": "weblogs*", "type": "index-pattern" }
                ]
              }' \
          --silent --show-error || echo -e "${RED}   Не удалось создать визуализацию Top URLs${NC}"
 
-    # 3. Создаём визуализацию Pie (Response Codes)
     echo -e "${YELLOW}   Создание визуализации Response Codes...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-response-codes" \
          -H "kbn-xsrf: true" \
@@ -253,16 +217,11 @@ if [ -z "$skip_dashboard" ]; then
                  "kibanaVersion": "8.17.1"
                },
                "references": [
-                 {
-                   "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName",
-                   "id": "weblogs*",
-                   "type": "index-pattern"
-                 }
+                 { "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName", "id": "weblogs*", "type": "index-pattern" }
                ]
              }' \
          --silent --show-error || echo -e "${RED}   Не удалось создать визуализацию Response Codes${NC}"
 
-    # 4. Создаём дашборд
     echo -e "${YELLOW}   Создание дашборда Nginx Dashboard...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
          -H "kbn-xsrf: true" \

@@ -17,6 +17,12 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Функция для вывода ошибок и выхода
+die() {
+    echo -e "${RED}ОШИБКА: $1${NC}" >&2
+    exit 1
+}
+
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}=== Установка ELK Stack (8.17.1) на log1 ===${NC}"
 echo -e "${GREEN}============================================${NC}"
@@ -35,31 +41,19 @@ echo -e "${YELLOW}==> 2. Скачивание пакетов ELK с Яндекс
 cd /tmp
 
 echo -e "${YELLOW}--- Скачивание Elasticsearch ---${NC}"
-wget -q --show-progress "https://clck.ru/3Tbvz5" -O elasticsearch.deb
-if file elasticsearch.deb | grep -q "Debian binary package"; then
-    echo -e "${GREEN}✓ Elasticsearch скачан успешно${NC}"
-else
-    echo -e "${RED}✗ Ошибка: скачанный файл не является deb-пакетом.${NC}"
-    exit 1
-fi
+wget -q --show-progress "https://clck.ru/3Tbvz5" -O elasticsearch.deb || die "Не удалось скачать elasticsearch.deb"
+file elasticsearch.deb | grep -q "Debian binary package" || die "Скачанный файл elasticsearch.deb не является deb-пакетом"
+echo -e "${GREEN}✓ Elasticsearch скачан успешно${NC}"
 
 echo -e "${YELLOW}--- Скачивание Logstash ---${NC}"
-wget -q --show-progress "https://clck.ru/3TbviL" -O logstash.deb
-if file logstash.deb | grep -q "Debian binary package"; then
-    echo -e "${GREEN}✓ Logstash скачан успешно${NC}"
-else
-    echo -e "${RED}✗ Ошибка при скачивании Logstash${NC}"
-    exit 1
-fi
+wget -q --show-progress "https://clck.ru/3TbviL" -O logstash.deb || die "Не удалось скачать logstash.deb"
+file logstash.deb | grep -q "Debian binary package" || die "Скачанный файл logstash.deb не является deb-пакетом"
+echo -e "${GREEN}✓ Logstash скачан успешно${NC}"
 
 echo -e "${YELLOW}--- Скачивание Kibana ---${NC}"
-wget -q --show-progress "https://clck.ru/3Tbvws" -O kibana.deb
-if file kibana.deb | grep -q "Debian binary package"; then
-    echo -e "${GREEN}✓ Kibana скачана успешно${NC}"
-else
-    echo -e "${RED}✗ Ошибка при скачивании Kibana${NC}"
-    exit 1
-fi
+wget -q --show-progress "https://clck.ru/3Tbvws" -O kibana.deb || die "Не удалось скачать kibana.deb"
+file kibana.deb | grep -q "Debian binary package" || die "Скачанный файл kibana.deb не является deb-пакетом"
+echo -e "${GREEN}✓ Kibana скачана успешно${NC}"
 
 # =============================================================================
 # 3. Установка пакетов
@@ -68,34 +62,27 @@ echo -e "${YELLOW}==> 3. Установка пакетов...${NC}"
 dpkg -i elasticsearch.deb logstash.deb kibana.deb
 
 # =============================================================================
-# 3.1. Полная очистка сгенерированных данных безопасности и прав
+# 4. Полная переустановка и очистка конфигурации Elasticsearch
 # =============================================================================
-echo -e "${YELLOW}==> 3.1. Очистка сгенерированных данных безопасности...${NC}"
+echo -e "${YELLOW}==> 4. Очистка сгенерированных данных безопасности и переустановка Elasticsearch...${NC}"
 
-# Останавливаем сервис, если он запущен (на случай повторного запуска скрипта)
+# Останавливаем сервис, если он запущен
 systemctl stop elasticsearch 2>/dev/null || true
 
-# Удаляем сертификаты и keystore
-rm -rf /etc/elasticsearch/certs
-rm -f /etc/elasticsearch/elasticsearch.keystore
+# Полностью удаляем каталог конфигурации Elasticsearch (он будет пересоздан при переустановке)
+rm -rf /etc/elasticsearch
 
-# Удаляем старые данные и логи Elasticsearch (чтобы избежать конфликтов)
-rm -rf /var/lib/elasticsearch/*
-rm -rf /var/log/elasticsearch/*
+# Переустанавливаем пакет elasticsearch (чтобы получить чистые права и структуру)
+apt install --reinstall -y elasticsearch
 
-# Устанавливаем правильного владельца и права на /etc/elasticsearch
-chown -R elasticsearch:elasticsearch /etc/elasticsearch
-chmod 750 /etc/elasticsearch
-
-# Создаём пустой keystore от имени пользователя elasticsearch
-sudo -u elasticsearch /usr/share/elasticsearch/bin/elasticsearch-keystore create 2>/dev/null || true
-
-echo -e "${GREEN}✓ Ключи безопасности удалены, права настроены, keystore создан${NC}"
+# Удаляем автоматически сгенерированные сертификаты и keystore (если они появились)
+rm -rf /etc/elasticsearch/certs 2>/dev/null
+rm -f /etc/elasticsearch/elasticsearch.keystore 2>/dev/null
 
 # =============================================================================
-# 4. Настройка Elasticsearch (отключаем безопасность, слушаем все интерфейсы)
+# 5. Настройка Elasticsearch (отключаем безопасность, слушаем все интерфейсы)
 # =============================================================================
-echo -e "${YELLOW}==> 4. Настройка Elasticsearch...${NC}"
+echo -e "${YELLOW}==> 5. Настройка Elasticsearch...${NC}"
 cat > /etc/elasticsearch/elasticsearch.yml <<'EOF'
 cluster.name: elk-cluster
 node.name: elk-node
@@ -113,11 +100,19 @@ cluster.initial_master_nodes: ["elk-node"]
 discovery.type: single-node
 EOF
 
-# Ещё раз убеждаемся, что права на конфиг корректны
-chown elasticsearch:elasticsearch /etc/elasticsearch/elasticsearch.yml
+# Устанавливаем правильные права доступа
+chown -R elasticsearch:elasticsearch /etc/elasticsearch
+chmod 750 /etc/elasticsearch
 chmod 660 /etc/elasticsearch/elasticsearch.yml
 
-# Запускаем Elasticsearch
+# Удаляем старые данные и логи Elasticsearch (чтобы избежать конфликтов)
+rm -rf /var/lib/elasticsearch/*
+rm -rf /var/log/elasticsearch/*
+
+# =============================================================================
+# 6. Запуск Elasticsearch и проверка
+# =============================================================================
+echo -e "${YELLOW}==> 6. Запуск Elasticsearch...${NC}"
 systemctl start elasticsearch
 systemctl enable elasticsearch
 
@@ -129,12 +124,15 @@ for i in {1..15}; do
         break
     fi
     sleep 2
+    if [ $i -eq 15 ]; then
+        die "Elasticsearch не запустился за 30 секунд. Проверьте логи: journalctl -u elasticsearch"
+    fi
 done
 
 # =============================================================================
-# 5. Настройка Kibana
+# 7. Настройка Kibana
 # =============================================================================
-echo -e "${YELLOW}==> 5. Настройка Kibana...${NC}"
+echo -e "${YELLOW}==> 7. Настройка Kibana...${NC}"
 cat > /etc/kibana/kibana.yml <<'EOF'
 server.port: 5601
 server.host: "0.0.0.0"
@@ -146,9 +144,9 @@ systemctl enable kibana
 echo -e "${GREEN}✓ Kibana запущена${NC}"
 
 # =============================================================================
-# 6. Настройка Logstash (приём логов от Filebeat на порту 5400)
+# 8. Настройка Logstash (приём логов от Filebeat на порту 5400)
 # =============================================================================
-echo -e "${YELLOW}==> 6. Настройка Logstash...${NC}"
+echo -e "${YELLOW}==> 8. Настройка Logstash...${NC}"
 mkdir -p /etc/logstash/conf.d
 
 cat > /etc/logstash/logstash.yml <<'EOF'
@@ -190,9 +188,9 @@ systemctl enable logstash
 echo -e "${GREEN}✓ Logstash запущен, слушает порт 5400${NC}"
 
 # =============================================================================
-# 7. Настройка UFW (межсетевой экран)
+# 9. Настройка UFW (межсетевой экран)
 # =============================================================================
-echo -e "${YELLOW}==> 7. Настройка UFW...${NC}"
+echo -e "${YELLOW}==> 9. Настройка UFW...${NC}"
 apt install -y ufw
 ufw allow 22/tcp comment 'SSH'
 ufw allow 5601/tcp comment 'Kibana UI'
@@ -202,7 +200,7 @@ ufw status verbose
 echo -e "${GREEN}✓ UFW настроен и включён${NC}"
 
 # =============================================================================
-# 8. Финальная проверка
+# 10. Финальная проверка и информация
 # =============================================================================
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}=== Установка ELK Stack завершена успешно! ===${NC}"
@@ -210,7 +208,7 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "Kibana: ${YELLOW}http://192.168.50.48:5601${NC}"
 echo -e "Elasticsearch API: ${YELLOW}http://192.168.50.48:9200${NC}"
 echo -e "Logstash слушает порт: ${YELLOW}5400${NC}"
-echo -e "\n${YELLOW}Проверка статуса:${NC}"
+echo -e "\n${YELLOW}Проверка статуса сервисов:${NC}"
 systemctl status elasticsearch --no-pager -l | head -5
 systemctl status logstash --no-pager -l | head -5
 systemctl status kibana --no-pager -l | head -5

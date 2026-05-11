@@ -57,7 +57,7 @@ dpkg -i "$ES_DEB"
 rm -rf /etc/elasticsearch/certs
 rm -f /etc/elasticsearch/elasticsearch.keystore
 
-# Настройка Elasticsearch (безопасность отключена, пути логов/данных)
+# Создаём конфиг (безопасность отключена, заданы пути логов и данных)
 cat > /etc/elasticsearch/elasticsearch.yml <<'EOF'
 cluster.name: elk-cluster
 node.name: elk-node
@@ -132,14 +132,31 @@ path.logs: /usr/share/logstash/logs
 EOF
 
 cat > /etc/logstash/conf.d/logstash-nginx-es.conf <<'EOF'
-input { beats { port => 5400 } }
+input {
+    beats {
+        port => 5400
+    }
+}
 filter {
-    grok { match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}" ] overwrite => [ "message" ] }
-    mutate { convert => ["response", "integer"] convert => ["bytes", "integer"] convert => ["responsetime", "float"] }
-    date { match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ] remove_field => [ "timestamp" ] }
+    grok {
+        match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}" ]
+        overwrite => [ "message" ]
+    }
+    mutate {
+        convert => ["response", "integer"]
+        convert => ["bytes", "integer"]
+        convert => ["responsetime", "float"]
+    }
+    date {
+        match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
+        remove_field => [ "timestamp" ]
+    }
 }
 output {
-    elasticsearch { hosts => ["http://localhost:9200"] index => "weblogs-%{+YYYY.MM.dd}" }
+    elasticsearch {
+        hosts => ["http://localhost:9200"]
+        index => "weblogs-%{+YYYY.MM.dd}"
+    }
     stdout { codec => rubydebug }
 }
 EOF
@@ -159,12 +176,11 @@ echo "y" | ufw enable
 ufw status verbose
 
 # -----------------------------------------------------------------------------
-# 8. Создание дашборда в Kibana через API
+# 8. Создание дашборда в Kibana через API (полностью рабочий метод)
 # -----------------------------------------------------------------------------
-
 echo -e "${YELLOW}==> 7. Создание дашборда в Kibana...${NC}"
 
-# Ждём готовности Kibana
+# Ожидание готовности Kibana
 skip_dashboard=0
 for i in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost:5601/api/status | grep -q "200"; then
@@ -179,7 +195,7 @@ for i in {1..30}; do
 done
 
 if [ "$skip_dashboard" -eq 0 ]; then
-    # 1. Index pattern (если уже существует, обновим)
+    # 1. Создание index pattern weblogs*
     echo -e "${YELLOW}   Создание index pattern weblogs*...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/weblogs*" \
          -H "kbn-xsrf: true" \
@@ -187,7 +203,7 @@ if [ "$skip_dashboard" -eq 0 ]; then
          -d '{"attributes":{"title":"weblogs*","timeFieldName":"@timestamp"}}' \
          --silent --show-error || echo -e "${YELLOW}   Index pattern возможно уже существует${NC}"
 
-    # 2. Визуализация Top URLs (без поля kibanaVersion)
+    # 2. Визуализация Top URLs
     echo -e "${YELLOW}   Создание визуализации Top URLs...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-top-urls" \
          -H "kbn-xsrf: true" \
@@ -233,8 +249,14 @@ if [ "$skip_dashboard" -eq 0 ]; then
              }' \
          --silent --show-error || echo -e "${RED}   Не удалось создать визуализацию Response Codes${NC}"
 
-    # 4. Создаём пустой дашборд
-    echo -e "${YELLOW}   Создание дашборда Nginx Dashboard...${NC}"
+    # 4. Удаляем старый дашборд (если существует)
+    echo -e "${YELLOW}   Удаление старого дашборда (если есть)...${NC}"
+    curl -X DELETE "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
+         -H "kbn-xsrf: true" \
+         --silent --show-error || true
+
+    # 5. Создаём дашборд с панелями (единым запросом)
+    echo -e "${YELLOW}   Создание дашборда с панелями...${NC}"
     curl -X POST "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
          -H "kbn-xsrf: true" \
          -H "Content-Type: application/json" \
@@ -248,18 +270,7 @@ if [ "$skip_dashboard" -eq 0 ]; then
                  "optionsJSON": "{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":false,\"hidePanelTitles\":false}",
                  "kibanaSavedObjectMeta": {
                    "searchSourceJSON": "{\"query\":{\"query\":\"\",\"language\":\"kuery\"},\"filter\":[]}"
-                 }
-               }
-             }' \
-         --silent --show-error || echo -e "${RED}   Не удалось создать дашборд${NC}"
-
-    # 5. Добавляем панели в дашборд через API обновления
-    echo -e "${YELLOW}   Добавление панелей в дашборд...${NC}"
-    curl -X PUT "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
-         -H "kbn-xsrf: true" \
-         -H "Content-Type: application/json" \
-         -d '{
-               "attributes": {
+                 },
                  "panels": [
                    {
                      "type": "visualization",
@@ -282,7 +293,7 @@ if [ "$skip_dashboard" -eq 0 ]; then
                  { "name": "2:panel_2.embeddableConfig.savedObjectId", "id": "nginx-response-codes", "type": "visualization" }
                ]
              }' \
-         --silent --show-error || echo -e "${RED}   Не удалось добавить панели${NC}"
+         --silent --show-error || echo -e "${RED}   Не удалось создать дашборд с панелями${NC}"
 
     echo -e "${GREEN}✓ Дашборд и визуализации созданы${NC}"
 fi

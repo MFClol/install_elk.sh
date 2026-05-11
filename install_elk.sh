@@ -22,7 +22,7 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}=== Установка ELK Stack на сервер log1 ===${NC}"
 echo -e "${GREEN}============================================${NC}"
 
-# 1. JDK
+# 1. Установка JDK
 echo -e "${YELLOW}==> 1. Установка JDK, wget, curl...${NC}"
 apt update -qq
 apt install -y -qq default-jdk wget curl
@@ -131,8 +131,10 @@ ufw allow 5400/tcp comment 'Logstash beats input'
 echo "y" | ufw enable
 ufw status verbose
 
-# 8. Создание дашборда (исправленный метод без strict mapping)
+# 8. Создание дашборда через импорт NDJSON (рабочий метод)
 echo -e "${YELLOW}==> 7. Создание дашборда в Kibana...${NC}"
+
+# Ожидание готовности Kibana
 skip_dashboard=0
 for i in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost:5601/api/status | grep -q "200"; then
@@ -141,98 +143,28 @@ for i in {1..30}; do
     fi
     sleep 2
     if [ $i -eq 30 ]; then
-        echo -e "${RED}⚠️ Kibana не ответила${NC}"
+        echo -e "${RED}⚠️ Kibana не ответила за 60 секунд. Дашборд не создан.${NC}"
         skip_dashboard=1
     fi
 done
 
 if [ "$skip_dashboard" -eq 0 ]; then
-    # Index pattern
-    echo -e "${YELLOW}   Создание index pattern weblogs*...${NC}"
-    curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/weblogs*" \
-         -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-         -d '{"attributes":{"title":"weblogs*","timeFieldName":"@timestamp"}}' \
-         --silent --show-error || true
+    # Формируем NDJSON файл с index pattern, визуализациями и дашбордом
+    cat > /tmp/dashboard.ndjson <<'EOF'
+{"id":"weblogs*","type":"index-pattern","attributes":{"title":"weblogs*","timeFieldName":"@timestamp"},"references":[]}
+{"id":"nginx-top-urls","type":"visualization","attributes":{"title":"Nginx – Top URLs","visState":"{\"title\":\"Nginx – Top URLs\",\"type\":\"histogram\",\"params\":{\"type\":\"histogram\",\"grid\":{\"categoryLines\":false},\"categoryAxes\":[{\"id\":\"CategoryAxis-1\",\"type\":\"category\",\"position\":\"bottom\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\"},\"labels\":{\"show\":true,\"truncate\":100},\"title\":{}}],\"valueAxes\":[{\"id\":\"ValueAxis-1\",\"name\":\"LeftAxis-1\",\"type\":\"value\",\"position\":\"left\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\",\"mode\":\"normal\"},\"labels\":{\"show\":true,\"rotate\":0,\"filter\":false,\"truncate\":100},\"title\":{\"text\":\"Count\"}}],\"seriesParams\":[{\"show\":\"true\",\"type\":\"histogram\",\"mode\":\"stacked\",\"data\":{\"label\":\"Count\",\"id\":\"1\"},\"valueAxis\":\"ValueAxis-1\",\"drawLinesBetweenPoints\":true,\"lineWidth\":2,\"showCircles\":true,\"interpolate\":\"linear\"}],\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"times\":[],\"addTimeMarker\":false,\"thresholdLine\":{\"show\":false,\"value\":10,\"width\":1,\"style\":\"full\",\"color\":\"#E7664C\"}},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"url.original.keyword\",\"size\":5,\"order\":\"desc\",\"orderBy\":\"1\"}}]}","uiStateJSON":"{}","description":"","version":1},"references":[{"name":"kibanaSavedObjectMeta.searchSourceJSON.indexRefName","id":"weblogs*","type":"index-pattern"}]}
+{"id":"nginx-response-codes","type":"visualization","attributes":{"title":"Nginx – Response Codes","visState":"{\"title\":\"Nginx – Response Codes\",\"type\":\"pie\",\"params\":{\"type\":\"pie\",\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"isDonut\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"http.response.status_code\",\"size\":10,\"order\":\"desc\",\"orderBy\":\"1\"}}]}","uiStateJSON":"{}","description":"","version":1},"references":[{"name":"kibanaSavedObjectMeta.searchSourceJSON.indexRefName","id":"weblogs*","type":"index-pattern"}]}
+{"id":"nginx-dashboard","type":"dashboard","attributes":{"title":"Nginx Dashboard","description":"","version":1,"timeRestore":false,"refreshInterval":{"pause":true,"value":0},"optionsJSON":"{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":false,\"hidePanelTitles\":false}","kibanaSavedObjectMeta":{"searchSourceJSON":"{\"query\":{\"query\":\"\",\"language\":\"kuery\"},\"filter\":[]}"},"panels":[{"type":"visualization","gridData":{"x":0,"y":0,"w":24,"h":15,"i":"1"},"panelIndex":"1","embeddableConfig":{},"explicitInput":{"savedObjectId":"nginx-top-urls"}},{"type":"visualization","gridData":{"x":24,"y":0,"w":24,"h":15,"i":"2"},"panelIndex":"2","embeddableConfig":{},"explicitInput":{"savedObjectId":"nginx-response-codes"}}]},"references":[{"name":"1:panel_1.embeddableConfig.savedObjectId","id":"nginx-top-urls","type":"visualization"},{"name":"2:panel_2.embeddableConfig.savedObjectId","id":"nginx-response-codes","type":"visualization"}]}
+EOF
 
-    # Визуализация Top URLs
-    echo -e "${YELLOW}   Создание визуализации Top URLs...${NC}"
-    curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-top-urls" \
-         -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-         -d '{
-               "attributes": {
-                 "title": "Nginx – Top URLs",
-                 "visState": "{\"title\":\"Nginx – Top URLs\",\"type\":\"histogram\",\"params\":{\"type\":\"histogram\",\"grid\":{\"categoryLines\":false},\"categoryAxes\":[{\"id\":\"CategoryAxis-1\",\"type\":\"category\",\"position\":\"bottom\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\"},\"labels\":{\"show\":true,\"truncate\":100},\"title\":{}}],\"valueAxes\":[{\"id\":\"ValueAxis-1\",\"name\":\"LeftAxis-1\",\"type\":\"value\",\"position\":\"left\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\",\"mode\":\"normal\"},\"labels\":{\"show\":true,\"rotate\":0,\"filter\":false,\"truncate\":100},\"title\":{\"text\":\"Count\"}}],\"seriesParams\":[{\"show\":\"true\",\"type\":\"histogram\",\"mode\":\"stacked\",\"data\":{\"label\":\"Count\",\"id\":\"1\"},\"valueAxis\":\"ValueAxis-1\",\"drawLinesBetweenPoints\":true,\"lineWidth\":2,\"showCircles\":true,\"interpolate\":\"linear\"}],\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"times\":[],\"addTimeMarker\":false,\"thresholdLine\":{\"show\":false,\"value\":10,\"width\":1,\"style\":\"full\",\"color\":\"#E7664C\"}},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"url.original.keyword\",\"size\":5,\"order\":\"desc\",\"orderBy\":\"1\"}}]}",
-                 "uiStateJSON": "{}",
-                 "description": "",
-                 "version": 1
-               },
-               "references": [{"name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName", "id": "weblogs*", "type": "index-pattern"}]
-             }' \
-         --silent --show-error || echo -e "${RED}   Ошибка создания Top URLs${NC}"
+    # Импорт с перезаписью существующих объектов
+    curl -X POST "http://localhost:5601/api/saved_objects/_import?overwrite=true" \
+         -H "kbn-xsrf: true" \
+         --form file=@/tmp/dashboard.ndjson \
+         --silent --show-error
 
-    # Визуализация Response Codes
-    echo -e "${YELLOW}   Создание визуализации Response Codes...${NC}"
-    curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-response-codes" \
-         -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-         -d '{
-               "attributes": {
-                 "title": "Nginx – Response Codes",
-                 "visState": "{\"title\":\"Nginx – Response Codes\",\"type\":\"pie\",\"params\":{\"type\":\"pie\",\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"isDonut\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"http.response.status_code\",\"size\":10,\"order\":\"desc\",\"orderBy\":\"1\"}}]}",
-                 "uiStateJSON": "{}",
-                 "description": "",
-                 "version": 1
-               },
-               "references": [{"name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName", "id": "weblogs*", "type": "index-pattern"}]
-             }' \
-         --silent --show-error || echo -e "${RED}   Ошибка создания Response Codes${NC}"
-
-    # Создаём пустой дашборд
-    echo -e "${YELLOW}   Создание пустого дашборда...${NC}"
-    DASH_ID=$(curl -s -X POST "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
-         -H "kbn-xsrf: true" -H "Content-Type: application/json" \
-         -d '{
-               "attributes": {
-                 "title": "Nginx Dashboard",
-                 "description": "",
-                 "timeRestore": false,
-                 "refreshInterval": { "pause": true, "value": 0 },
-                 "optionsJSON": "{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":false,\"hidePanelTitles\":false}",
-                 "kibanaSavedObjectMeta": { "searchSourceJSON": "{\"query\":{\"query\":\"\",\"language\":\"kuery\"},\"filter\":[]}" }
-               }
-             }' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-    if [ -n "$DASH_ID" ]; then
-        echo -e "${GREEN}   Дашборд создан (id: $DASH_ID)${NC}"
-
-        # Добавляем панели через отдельный API (для Kibana 8.x)
-        echo -e "${YELLOW}   Добавление панелей...${NC}"
-        curl -X POST "http://localhost:5601/api/dashboards/nginx-dashboard/panels" \
-             -H "kbn-xsrf: true" \
-             -H "Content-Type: application/json" \
-             -d '{
-                   "panels": [
-                     {
-                       "type": "visualization",
-                       "gridData": { "x": 0, "y": 0, "w": 24, "h": 15, "i": "1" },
-                       "panelIndex": "1",
-                       "embeddableConfig": {},
-                       "explicitInput": { "savedObjectId": "nginx-top-urls" }
-                     },
-                     {
-                       "type": "visualization",
-                       "gridData": { "x": 24, "y": 0, "w": 24, "h": 15, "i": "2" },
-                       "panelIndex": "2",
-                       "embeddableConfig": {},
-                       "explicitInput": { "savedObjectId": "nginx-response-codes" }
-                     }
-                   ]
-                 }' \
-             --silent --show-error || echo -e "${RED}   Не удалось добавить панели${NC}"
-    else
-        echo -e "${RED}   Не удалось создать дашборд${NC}"
-    fi
-
-    echo -e "${GREEN}✓ Дашборд и визуализации созданы${NC}"
+    rm -f /tmp/dashboard.ndjson
+    echo -e "${GREEN}✓ Дашборд и визуализации импортированы${NC}"
 fi
 
 # 9. Финальная информация

@@ -187,10 +187,12 @@ ufw status verbose
 # -----------------------------------------------------------------------------
 # 8. Создание дашборда в Kibana
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 7. Создание дашборда в Kibana через API
+# -----------------------------------------------------------------------------
 echo -e "${YELLOW}==> 7. Создание дашборда в Kibana...${NC}"
 
-# Ждём, пока Kibana полностью запустится
-skip_dashboard=0
+# Ждём готовности Kibana
 for i in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost:5601/api/status | grep -q "200"; then
         echo -e "${GREEN}✓ Kibana готова${NC}"
@@ -198,38 +200,109 @@ for i in {1..30}; do
     fi
     sleep 2
     if [ $i -eq 30 ]; then
-        echo -e "${RED}⚠️  Kibana не ответила за 60 секунд. Дашборд не создан.${NC}"
+        echo -e "${RED}⚠️ Kibana не ответила за 60 секунд. Дашборд не создан.${NC}"
         skip_dashboard=1
     fi
 done
 
-if [ "$skip_dashboard" -eq 0 ]; then
-    TMP_DIR=$(mktemp -d)
-    cd "$TMP_DIR"
-
-    # NDJSON-файл с визуализациями и дашбордом
-    cat > dashboard_export.ndjson <<'EOF'
-{"id":"nginx-top-urls","type":"visualization","attributes":{"title":"Nginx – Top URLs","visState":"{\"title\":\"Nginx – Top URLs\",\"type\":\"histogram\",\"params\":{\"type\":\"histogram\",\"grid\":{\"categoryLines\":false},\"categoryAxes\":[{\"id\":\"CategoryAxis-1\",\"type\":\"category\",\"position\":\"bottom\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\"},\"labels\":{\"show\":true,\"truncate\":100},\"title\":{}}],\"valueAxes\":[{\"id\":\"ValueAxis-1\",\"name\":\"LeftAxis-1\",\"type\":\"value\",\"position\":\"left\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\",\"mode\":\"normal\"},\"labels\":{\"show\":true,\"rotate\":0,\"filter\":false,\"truncate\":100},\"title\":{\"text\":\"Count\"}}],\"seriesParams\":[{\"show\":\"true\",\"type\":\"histogram\",\"mode\":\"stacked\",\"data\":{\"label\":\"Count\",\"id\":\"1\"},\"valueAxis\":\"ValueAxis-1\",\"drawLinesBetweenPoints\":true,\"lineWidth\":2,\"showCircles\":true,\"interpolate\":\"linear\"}],\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"times\":[],\"addTimeMarker\":false,\"thresholdLine\":{\"show\":false,\"value\":10,\"width\":1,\"style\":\"full\",\"color\":\"#E7664C\"}},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"url.original.keyword\",\"size\":5,\"order\":\"desc\",\"orderBy\":\"1\"}}]}","uiStateJSON":"{}","description":"","version":1,"kibanaVersion":"8.17.1"},"references":[{"name":"kibanaSavedObjectMeta.searchSourceJSON.indexRefName","id":"weblogs-*","type":"index-pattern"}],"migrationVersion":{"visualization":"8.0.0"},"coreMigrationVersion":"8.17.1"}
-{"id":"nginx-response-codes","type":"visualization","attributes":{"title":"Nginx – Response Codes","visState":"{\"title\":\"Nginx – Response Codes\",\"type\":\"pie\",\"params\":{\"type\":\"pie\",\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"isDonut\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"http.response.status_code\",\"size\":10,\"order\":\"desc\",\"orderBy\":\"1\"}}]}","uiStateJSON":"{}","description":"","version":1,"kibanaVersion":"8.17.1"},"references":[{"name":"kibanaSavedObjectMeta.searchSourceJSON.indexRefName","id":"weblogs-*","type":"index-pattern"}],"migrationVersion":{"visualization":"8.0.0"},"coreMigrationVersion":"8.17.1"}
-{"id":"nginx-dashboard","type":"dashboard","attributes":{"title":"Nginx Dashboard","description":"","version":1,"panels":[{"type":"visualization","gridData":{"x":0,"y":0,"w":24,"h":15,"i":"1"},"panelIndex":"1","embeddableConfig":{},"explicitInput":{"savedObjectId":"nginx-top-urls"}},{"type":"visualization","gridData":{"x":24,"y":0,"w":24,"h":15,"i":"2"},"panelIndex":"2","embeddableConfig":{},"explicitInput":{"savedObjectId":"nginx-response-codes"}}],"optionsJSON":"{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":false,\"hidePanelTitles\":false}","timeRestore":false,"refreshInterval":{"pause":true,"value":0},"kibanaSavedObjectMeta":{"searchSourceJSON":"{\"query\":{\"query\":\"\",\"language\":\"kuery\"},\"filter\":[]}"}},"references":[{"name":"1:panel_1.embeddableConfig.savedObjectId","id":"nginx-top-urls","type":"visualization"},{"name":"2:panel_2.embeddableConfig.savedObjectId","id":"nginx-response-codes","type":"visualization"}],"migrationVersion":{"dashboard":"8.0.0"},"coreMigrationVersion":"8.17.1"}
-EOF
-
-    # Импорт объектов (игнорируем возможную ошибку, если index pattern ещё не существует)
-    curl -X POST "http://localhost:5601/api/saved_objects/_import?overwrite=true" \
-         -H "kbn-xsrf: true" \
-         --form file=@dashboard_export.ndjson \
-         --silent --show-error || echo -e "${RED}Не удалось импортировать дашборд (возможно, index pattern ещё не создан).${NC}"
-
-    # Создание index pattern weblogs-* (если его нет)
-    curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/weblogs-*" \
+if [ -z "$skip_dashboard" ]; then
+    # 1. Создаём index pattern weblogs*
+    echo -e "${YELLOW}   Создание index pattern weblogs*...${NC}"
+    curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/weblogs*" \
          -H "kbn-xsrf: true" \
          -H "Content-Type: application/json" \
-         -d '{"attributes":{"title":"weblogs-*","timeFieldName":"@timestamp"}}' \
-         --silent --show-error || echo -e "${YELLOW}Index pattern уже существует или не создан.${NC}"
+         -d '{"attributes":{"title":"weblogs*","timeFieldName":"@timestamp"}}' \
+         --silent --show-error || echo -e "${RED}   Не удалось создать index pattern${NC}"
 
-    cd /
-    rm -rf "$TMP_DIR"
-    echo -e "${GREEN}✓ Дашборд и визуализации импортированы в Kibana${NC}"
+    # 2. Создаём визуализацию Bar (Top URLs)
+    echo -e "${YELLOW}   Создание визуализации Top URLs...${NC}"
+    curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-top-urls" \
+         -H "kbn-xsrf: true" \
+         -H "Content-Type: application/json" \
+         -d '{
+               "attributes": {
+                 "title": "Nginx – Top URLs",
+                 "visState": "{\"title\":\"Nginx – Top URLs\",\"type\":\"histogram\",\"params\":{\"type\":\"histogram\",\"grid\":{\"categoryLines\":false},\"categoryAxes\":[{\"id\":\"CategoryAxis-1\",\"type\":\"category\",\"position\":\"bottom\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\"},\"labels\":{\"show\":true,\"truncate\":100},\"title\":{}}],\"valueAxes\":[{\"id\":\"ValueAxis-1\",\"name\":\"LeftAxis-1\",\"type\":\"value\",\"position\":\"left\",\"show\":true,\"style\":{},\"scale\":{\"type\":\"linear\",\"mode\":\"normal\"},\"labels\":{\"show\":true,\"rotate\":0,\"filter\":false,\"truncate\":100},\"title\":{\"text\":\"Count\"}}],\"seriesParams\":[{\"show\":\"true\",\"type\":\"histogram\",\"mode\":\"stacked\",\"data\":{\"label\":\"Count\",\"id\":\"1\"},\"valueAxis\":\"ValueAxis-1\",\"drawLinesBetweenPoints\":true,\"lineWidth\":2,\"showCircles\":true,\"interpolate\":\"linear\"}],\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"times\":[],\"addTimeMarker\":false,\"thresholdLine\":{\"show\":false,\"value\":10,\"width\":1,\"style\":\"full\",\"color\":\"#E7664C\"}},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"url.original.keyword\",\"size\":5,\"order\":\"desc\",\"orderBy\":\"1\"}}]}",
+                 "uiStateJSON": "{}",
+                 "description": "",
+                 "version": 1,
+                 "kibanaVersion": "8.17.1"
+               },
+               "references": [
+                 {
+                   "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName",
+                   "id": "weblogs*",
+                   "type": "index-pattern"
+                 }
+               ]
+             }' \
+         --silent --show-error || echo -e "${RED}   Не удалось создать визуализацию Top URLs${NC}"
+
+    # 3. Создаём визуализацию Pie (Response Codes)
+    echo -e "${YELLOW}   Создание визуализации Response Codes...${NC}"
+    curl -X POST "http://localhost:5601/api/saved_objects/visualization/nginx-response-codes" \
+         -H "kbn-xsrf: true" \
+         -H "Content-Type: application/json" \
+         -d '{
+               "attributes": {
+                 "title": "Nginx – Response Codes",
+                 "visState": "{\"title\":\"Nginx – Response Codes\",\"type\":\"pie\",\"params\":{\"type\":\"pie\",\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"isDonut\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"http.response.status_code\",\"size\":10,\"order\":\"desc\",\"orderBy\":\"1\"}}]}",
+                 "uiStateJSON": "{}",
+                 "description": "",
+                 "version": 1,
+                 "kibanaVersion": "8.17.1"
+               },
+               "references": [
+                 {
+                   "name": "kibanaSavedObjectMeta.searchSourceJSON.indexRefName",
+                   "id": "weblogs*",
+                   "type": "index-pattern"
+                 }
+               ]
+             }' \
+         --silent --show-error || echo -e "${RED}   Не удалось создать визуализацию Response Codes${NC}"
+
+    # 4. Создаём дашборд
+    echo -e "${YELLOW}   Создание дашборда Nginx Dashboard...${NC}"
+    curl -X POST "http://localhost:5601/api/saved_objects/dashboard/nginx-dashboard" \
+         -H "kbn-xsrf: true" \
+         -H "Content-Type: application/json" \
+         -d '{
+               "attributes": {
+                 "title": "Nginx Dashboard",
+                 "description": "",
+                 "version": 1,
+                 "panels": [
+                   {
+                     "type": "visualization",
+                     "gridData": { "x": 0, "y": 0, "w": 24, "h": 15, "i": "1" },
+                     "panelIndex": "1",
+                     "embeddableConfig": {},
+                     "explicitInput": { "savedObjectId": "nginx-top-urls" }
+                   },
+                   {
+                     "type": "visualization",
+                     "gridData": { "x": 24, "y": 0, "w": 24, "h": 15, "i": "2" },
+                     "panelIndex": "2",
+                     "embeddableConfig": {},
+                     "explicitInput": { "savedObjectId": "nginx-response-codes" }
+                   }
+                 ],
+                 "optionsJSON": "{\"useMargins\":true,\"syncColors\":false,\"syncCursor\":true,\"syncTooltips\":false,\"hidePanelTitles\":false}",
+                 "timeRestore": false,
+                 "refreshInterval": { "pause": true, "value": 0 },
+                 "kibanaSavedObjectMeta": {
+                   "searchSourceJSON": "{\"query\":{\"query\":\"\",\"language\":\"kuery\"},\"filter\":[]}"
+                 }
+               },
+               "references": [
+                 { "name": "1:panel_1.embeddableConfig.savedObjectId", "id": "nginx-top-urls", "type": "visualization" },
+                 { "name": "2:panel_2.embeddableConfig.savedObjectId", "id": "nginx-response-codes", "type": "visualization" }
+               ]
+             }' \
+         --silent --show-error || echo -e "${RED}   Не удалось создать дашборд${NC}"
+
+    echo -e "${GREEN}✓ Дашборд и визуализации созданы${NC}"
 fi
 
 # -----------------------------------------------------------------------------
